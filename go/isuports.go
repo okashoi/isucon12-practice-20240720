@@ -1691,5 +1691,49 @@ func initializeHandler(c echo.Context) error {
 	res := InitializeHandlerResult{
 		Lang: "go",
 	}
+
+	ctx := context.Background()
+
+	// adminDB からすべてのテナントを取得
+	ts := []TenantRow{}
+	if err := adminDB.SelectContext(ctx, &ts, "SELECT * FROM tenant"); err != nil {
+		return fmt.Errorf("error Select tenant: %w", err)
+	}
+
+	// 各テナントの終了済み大会について billingReportByCompetition を実行してレポートを生成
+	for _, t := range ts {
+		tenantDB, err := connectToTenantDB(t.ID)
+		if err != nil {
+			return fmt.Errorf("failed to connectToTenantDB: %w", err)
+		}
+		defer tenantDB.Close()
+
+		// 終了済み大会を取得
+		comps := []CompetitionRow{}
+		if err := tenantDB.SelectContext(ctx, &comps, "SELECT * FROM competition WHERE tenant_id = ? AND finished_at IS NOT NULL", t.ID); err != nil {
+			return fmt.Errorf("failed to select finished competitions: %w", err)
+		}
+
+		// 各大会についてレポートを生成し、レポートデータベースに挿入
+		for _, comp := range comps {
+			report, err := billingReportByCompetition(ctx, tenantDB, t.ID, comp.ID)
+			if err != nil {
+				return fmt.Errorf("error billingReportByCompetition: %w", err)
+			}
+
+			// 新しいレポートを挿入
+			if _, err := adminDB.ExecContext(ctx, `
+                INSERT INTO billing_reports (
+                    tenant_id, competition_id, competition_title, player_count, visitor_count, 
+                    billing_player_yen, billing_visitor_yen, billing_yen
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+				t.ID, report.CompetitionID, report.CompetitionTitle, report.PlayerCount,
+				report.VisitorCount, report.BillingPlayerYen, report.BillingVisitorYen, report.BillingYen,
+			); err != nil {
+				return fmt.Errorf("failed to insert new report: %w", err)
+			}
+		}
+	}
+
 	return c.JSON(http.StatusOK, SuccessResult{Status: true, Data: res})
 }
