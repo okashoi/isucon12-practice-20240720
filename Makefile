@@ -1,4 +1,3 @@
-$ cat Makefile
 .PHONY: *
 
 gogo: stop-services build truncate-logs start-services
@@ -9,7 +8,7 @@ stop-services:
 	sudo systemctl stop mysql
 
 build:
-	docker-compose build
+	docker compose -f docker-compose-go.yml build
 
 truncate-logs:
 	sudo journalctl --vacuum-size=1K
@@ -27,7 +26,7 @@ kataribe: timestamp=$(shell TZ=Asia/Tokyo date "+%Y%m%d-%H%M%S")
 kataribe:
 	mkdir -p ~/kataribe-logs
 	sudo cp /var/log/nginx/access.log /tmp/last-access.log && sudo chmod 666 /tmp/last-access.log
-	cat /tmp/last-access.log | ./kataribe -conf kataribe.toml > ~/kataribe-logs/$timestamp.log
+	cat /tmp/last-access.log | kataribe -conf kataribe.toml > ~/kataribe-logs/$timestamp.log
 	cat ~/kataribe-logs/$timestamp.log | grep --after-context 20 "Top 20 Sort By Total"
 
 pprof: TIME=60
