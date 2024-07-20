@@ -1418,8 +1418,8 @@ func competitionRankingHandler(c echo.Context) error {
 		playerIDs[i] = ps.PlayerID
 	}
 
-	// Get all players at once
-	players := []PlayerDetail{}
+	// 参加者を取得する
+	players := make([]PlayerRow, len(playerIDs))
 	query, args, err := sqlx.In(
 		"SELECT * FROM player WHERE id IN (?)",
 		playerIDs,
@@ -1433,7 +1433,7 @@ func competitionRankingHandler(c echo.Context) error {
 	}
 
 	// Create a map for quick lookup
-	playerMap := make(map[string]PlayerDetail)
+	playerMap := make(map[string]PlayerRow)
 	for _, player := range players {
 		playerMap[player.ID] = player
 	}
