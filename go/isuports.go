@@ -1231,38 +1231,74 @@ func playerHandler(c echo.Context) error {
 		return fmt.Errorf("error Select competition: %w", err)
 	}
 
+	// 競技IDを収集
+	competitionIDs := make([]string, len(cs))
+	for i, c := range cs {
+		competitionIDs[i] = c.ID
+	}
+
 	// player_scoreを読んでいるときに更新が走ると不整合が起こるのでロックを取得する
 	fl, err := flockByTenantID(v.tenantID)
 	if err != nil {
 		return fmt.Errorf("error flockByTenantID: %w", err)
 	}
 	defer fl.Close()
+
+	// player_scoreを一度に取得
+	playerScores := []PlayerScoreRow{}
+	query, args, err := sqlx.In(
+		"SELECT * FROM player_score WHERE tenant_id = ? AND player_id = ? AND competition_id IN (?) ORDER BY competition_id, row_num DESC",
+		v.tenantID, p.ID, competitionIDs)
+	if err != nil {
+		return fmt.Errorf("error building query for player scores: %w", err)
+	}
+	query = tenantDB.Rebind(query)
+	if err := tenantDB.SelectContext(ctx, &playerScores, query, args...); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("error Select player_score: %w", err)
+	}
+
+	// 最新のスコアを取得
+	psMap := make(map[string]PlayerScoreRow)
+	for _, ps := range playerScores {
+		if _, exists := psMap[ps.CompetitionID]; !exists {
+			psMap[ps.CompetitionID] = ps
+		}
+	}
+
+	// 結果のスライスに変換
 	pss := make([]PlayerScoreRow, 0, len(cs))
 	for _, c := range cs {
-		ps := PlayerScoreRow{}
-		if err := tenantDB.GetContext(
-			ctx,
-			&ps,
-			// 最後にCSVに登場したスコアを採用する = row_numが一番大きいもの
-			"SELECT * FROM player_score WHERE tenant_id = ? AND competition_id = ? AND player_id = ? ORDER BY row_num DESC LIMIT 1",
-			v.tenantID,
-			c.ID,
-			p.ID,
-		); err != nil {
-			// 行がない = スコアが記録されてない
-			if errors.Is(err, sql.ErrNoRows) {
-				continue
-			}
-			return fmt.Errorf("error Select player_score: tenantID=%d, competitionID=%s, playerID=%s, %w", v.tenantID, c.ID, p.ID, err)
+		if ps, exists := psMap[c.ID]; exists {
+			pss = append(pss, ps)
 		}
-		pss = append(pss, ps)
 	}
 
 	psds := make([]PlayerScoreDetail, 0, len(pss))
+	// 一度に全ての CompetitionRow を取得
+	comps := []CompetitionRow{}
+	query, args, err = sqlx.In(
+		"SELECT * FROM competition WHERE id IN (?)",
+		competitionIDs,
+	)
+	if err != nil {
+		return fmt.Errorf("error building query for competitions: %w", err)
+	}
+	query = tenantDB.Rebind(query)
+	if err := tenantDB.SelectContext(ctx, &comps, query, args...); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("error Select competitions: %w", err)
+	}
+
+	// CompetitionID をキーにしたマップを作成
+	compMap := make(map[string]CompetitionRow)
+	for _, comp := range comps {
+		compMap[comp.ID] = comp
+	}
+
+	// pss をループして psds を作成
 	for _, ps := range pss {
-		comp, err := retrieveCompetition(ctx, tenantDB, ps.CompetitionID)
-		if err != nil {
-			return fmt.Errorf("error retrieveCompetition: %w", err)
+		comp, exists := compMap[ps.CompetitionID]
+		if !exists {
+			return fmt.Errorf("competition not found: id=%s", ps.CompetitionID)
 		}
 		psds = append(psds, PlayerScoreDetail{
 			CompetitionTitle: comp.Title,
