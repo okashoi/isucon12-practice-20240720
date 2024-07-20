@@ -787,6 +787,11 @@ func playersAddHandler(c echo.Context) error {
 	displayNames := params["display_name[]"]
 
 	pds := make([]PlayerDetail, 0, len(displayNames))
+	// Collect all data to be inserted
+	var (
+		placeholders []string
+		values       []interface{}
+	)
 	for _, displayName := range displayNames {
 		id, err := dispenseID(ctx)
 		if err != nil {
@@ -794,25 +799,22 @@ func playersAddHandler(c echo.Context) error {
 		}
 
 		now := time.Now().Unix()
-		if _, err := tenantDB.ExecContext(
-			ctx,
-			"INSERT INTO player (id, tenant_id, display_name, is_disqualified, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
-			id, v.tenantID, displayName, false, now, now,
-		); err != nil {
-			return fmt.Errorf(
-				"error Insert player at tenantDB: id=%s, displayName=%s, isDisqualified=%t, createdAt=%d, updatedAt=%d, %w",
-				id, displayName, false, now, now, err,
-			)
-		}
-		p, err := retrievePlayer(ctx, tenantDB, id)
-		if err != nil {
-			return fmt.Errorf("error retrievePlayer: %w", err)
-		}
+		placeholders = append(placeholders, "(?, ?, ?, ?, ?, ?)")
+		values = append(values, id, v.tenantID, displayName, false, now, now)
 		pds = append(pds, PlayerDetail{
-			ID:             p.ID,
-			DisplayName:    p.DisplayName,
-			IsDisqualified: p.IsDisqualified,
+			ID:             id,
+			DisplayName:    displayName,
+			IsDisqualified: false,
 		})
+	}
+
+	// Create the SQL statement for bulk insert
+	query := "INSERT INTO player (id, tenant_id, display_name, is_disqualified, created_at, updated_at) VALUES " +
+		strings.Join(placeholders, ", ")
+
+	// Execute the bulk insert
+	if _, err := tenantDB.ExecContext(ctx, query, values...); err != nil {
+		return fmt.Errorf("error Insert player at tenantDB: %w", err)
 	}
 
 	res := PlayersAddHandlerResult{
