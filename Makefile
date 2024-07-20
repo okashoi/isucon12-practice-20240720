@@ -1,14 +1,19 @@
 .PHONY: *
 
-gogo: stop-services build truncate-logs start-services
+gogo: stop-services sync-app build truncate-logs start-services
 
 stop-services:
 	sudo systemctl stop nginx
 	sudo systemctl stop isuports.service
+	ssh isucon-s2 sudo systemctl stop isuports.service
 	sudo systemctl stop mysql
 
+sync-app:
+	scp -r go isucon-s2:~/webapp/go
+
 build:
-	docker compose -f docker-compose-go.yml build
+	cd go && make
+	ssh isucon-s2 "cd webapp/go && make"
 
 truncate-logs:
 	sudo journalctl --vacuum-size=1K
@@ -20,6 +25,7 @@ truncate-logs:
 start-services:
 	sudo systemctl start mysql
 	sudo systemctl start isuports.service
+	ssh isucon-s2 sudo systemctl start isuports.service
 	sudo systemctl start nginx
 
 kataribe: timestamp=$(shell TZ=Asia/Tokyo date "+%Y%m%d-%H%M%S")
