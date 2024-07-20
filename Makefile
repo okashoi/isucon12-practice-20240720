@@ -10,7 +10,6 @@ stop-services:
 
 sync-app:
 	scp -r go isucon-s2:~/webapp/go
-	acp -r ../env.sh isucon-s2:~/
 
 build:
 	cd go && make
