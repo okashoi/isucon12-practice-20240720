@@ -1405,12 +1405,6 @@ func competitionRankingHandler(c echo.Context) error {
 	if err != nil {
 		return fmt.Errorf("error begin transaction failed: %w", err)
 	}
-	defer func(tx *sqlx.Tx) {
-		err := tx.Rollback()
-		if err != nil {
-			log.Printf("error rollback transaction failed: %v", err)
-		}
-	}(tx)
 
 	pss := []PlayerScoreRow{}
 	if err := tx.SelectContext(
@@ -1420,6 +1414,7 @@ func competitionRankingHandler(c echo.Context) error {
 		tenant.ID,
 		competitionID,
 	); err != nil {
+		_ = tx.Rollback()
 		return fmt.Errorf("error Select player_score: tenantID=%d, competitionID=%s, %w", tenant.ID, competitionID, err)
 	}
 
@@ -1439,10 +1434,12 @@ func competitionRankingHandler(c echo.Context) error {
 			playerIDs,
 		)
 		if err != nil {
+			_ = tx.Rollback()
 			return fmt.Errorf("error building query for players: %w", err)
 		}
 		query = tx.Rebind(query)
 		if err := tx.SelectContext(ctx, &players, query, args...); err != nil && !errors.Is(err, sql.ErrNoRows) {
+			_ = tx.Rollback()
 			return fmt.Errorf("error Select players: %w", err)
 		}
 
@@ -1452,6 +1449,7 @@ func competitionRankingHandler(c echo.Context) error {
 	}
 
 	if err = tx.Commit(); err != nil {
+		_ = tx.Rollback()
 		return fmt.Errorf("error commit transaction failed: %w", err)
 	}
 
