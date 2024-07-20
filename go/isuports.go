@@ -670,7 +670,7 @@ func tenantsBillingHandler(c echo.Context) error {
 		var billingYen int64
 		err := adminDB.GetContext(ctx, &billingYen, "SELECT SUM(billing_yen) FROM billing_reports WHERE tenant_id = ?", t.ID)
 		if err != nil {
-			return fmt.Errorf("failed to get billing information from reportDB: %w", err)
+			billingYen = 0
 		}
 
 		tb.BillingYen = billingYen
