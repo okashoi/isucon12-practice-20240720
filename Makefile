@@ -13,8 +13,8 @@ sync-app:
 	acp -r ../env.sh isucon-s2:~/
 
 build:
-	docker compose -f docker-compose-go.yml build
-	ssh isucon-s2 "cd webapp && docker compose -f docker-compose-go.yml build"
+	cd go && make
+	ssh isucon-s2 "cd webapp/go && make"
 
 truncate-logs:
 	sudo journalctl --vacuum-size=1K
