@@ -971,6 +971,27 @@ func competitionFinishHandler(c echo.Context) error {
 			now, now, id, err,
 		)
 	}
+
+	report, err := billingReportByCompetition(ctx, tenantDB, v.tenantID, id)
+	if err != nil {
+		return fmt.Errorf("error billingReportByCompetition: %w", err)
+	}
+
+	// 非同期で課金レポートを生成し、保存
+	go func() {
+		if _, err := adminDB.ExecContext(ctx, `
+        INSERT INTO billing_reports (
+            tenant_id, competition_id, competition_title, player_count, visitor_count, 
+            billing_player_yen, billing_visitor_yen, billing_yen
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+			v.tenantID, report.CompetitionID, report.CompetitionTitle, report.PlayerCount,
+			report.VisitorCount, report.BillingPlayerYen, report.BillingVisitorYen, report.BillingYen,
+		); err != nil {
+			fmt.Errorf("failed to insert new report: %w", err)
+			return
+		}
+	}()
+
 	return c.JSON(http.StatusOK, SuccessResult{Status: true})
 }
 
