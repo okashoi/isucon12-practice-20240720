@@ -14,6 +14,7 @@ require (
 )
 
 require (
+	github.com/bwmarrin/snowflake v0.3.0 // indirect
 	github.com/decred/dcrd/dcrec/secp256k1/v4 v4.0.1 // indirect
 	github.com/felixge/fgprof v0.9.4 // indirect
 	github.com/goccy/go-json v0.9.7 // indirect
