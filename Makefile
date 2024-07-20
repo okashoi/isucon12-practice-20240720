@@ -9,7 +9,7 @@ stop-services:
 	sudo systemctl stop mysql
 
 sync-app:
-	scp -r webapp isucon-s2:~/webapp
+	scp -r go isucon-s2:~/webapp/go
 	acp -r ../env.sh isucon-s2:~/
 
 build:
