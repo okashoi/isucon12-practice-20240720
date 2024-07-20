@@ -1401,14 +1401,19 @@ func competitionRankingHandler(c echo.Context) error {
 		}
 	}
 
-	// player_scoreを読んでいるときに更新が走ると不整合が起こるのでロックを取得する
-	fl, err := flockByTenantID(v.tenantID)
+	tx, err := tenantDB.Beginx()
 	if err != nil {
-		return fmt.Errorf("error flockByTenantID: %w", err)
+		return fmt.Errorf("error begin transaction failed: %w", err)
 	}
-	defer fl.Close()
+	defer func(tx *sqlx.Tx) {
+		err := tx.Rollback()
+		if err != nil {
+			log.Printf("error rollback transaction failed: %v", err)
+		}
+	}(tx)
+
 	pss := []PlayerScoreRow{}
-	if err := tenantDB.SelectContext(
+	if err := tx.SelectContext(
 		ctx,
 		&pss,
 		"SELECT * FROM player_score WHERE tenant_id = ? AND competition_id = ? ORDER BY row_num DESC",
@@ -1436,14 +1441,18 @@ func competitionRankingHandler(c echo.Context) error {
 		if err != nil {
 			return fmt.Errorf("error building query for players: %w", err)
 		}
-		query = tenantDB.Rebind(query)
-		if err := tenantDB.SelectContext(ctx, &players, query, args...); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		query = tx.Rebind(query)
+		if err := tx.SelectContext(ctx, &players, query, args...); err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return fmt.Errorf("error Select players: %w", err)
 		}
 
 		for _, player := range players {
 			playerMap[player.ID] = player
 		}
+	}
+
+	if err = tx.Commit(); err != nil {
+		return fmt.Errorf("error commit transaction failed: %w", err)
 	}
 
 	ranks := make([]CompetitionRank, 0, len(pss))
