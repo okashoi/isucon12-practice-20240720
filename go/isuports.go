@@ -1043,7 +1043,8 @@ func competitionScoreHandler(c echo.Context) error {
 	}
 
 	var rowNum int64
-	playerScoreRows := []PlayerScoreRow{}
+	playerScoreMap := make(map[string]PlayerScoreRow)
+	var rowNum int64
 	for {
 		rowNum++
 		row, err := r.Read()
@@ -1079,7 +1080,7 @@ func competitionScoreHandler(c echo.Context) error {
 			return fmt.Errorf("error dispenseID: %w", err)
 		}
 		now := time.Now().Unix()
-		playerScoreRows = append(playerScoreRows, PlayerScoreRow{
+		playerScoreMap[playerID] = PlayerScoreRow{
 			ID:            id,
 			TenantID:      v.tenantID,
 			PlayerID:      playerID,
@@ -1088,7 +1089,7 @@ func competitionScoreHandler(c echo.Context) error {
 			RowNum:        rowNum,
 			CreatedAt:     now,
 			UpdatedAt:     now,
-		})
+		}
 	}
 
 	if _, err := tenantDB.ExecContext(
@@ -1100,9 +1101,9 @@ func competitionScoreHandler(c echo.Context) error {
 		return fmt.Errorf("error Delete player_score: tenantID=%d, competitionID=%s, %w", v.tenantID, competitionID, err)
 	}
 	// バルクインサート用のクエリとパラメータを作成
-	valueStrings := make([]string, 0, len(playerScoreRows))
-	valueArgs := make([]interface{}, 0, len(playerScoreRows)*8)
-	for _, ps := range playerScoreRows {
+	valueStrings := make([]string, 0, len(playerScoreMap))
+	valueArgs := make([]interface{}, 0, len(playerScoreMap)*8)
+	for _, ps := range playerScoreMap {
 		valueStrings = append(valueStrings, "(?, ?, ?, ?, ?, ?, ?, ?)")
 		valueArgs = append(valueArgs, ps.ID, ps.TenantID, ps.PlayerID, ps.CompetitionID, ps.Score, ps.RowNum, ps.CreatedAt, ps.UpdatedAt)
 	}
@@ -1114,7 +1115,7 @@ func competitionScoreHandler(c echo.Context) error {
 
 	return c.JSON(http.StatusOK, SuccessResult{
 		Status: true,
-		Data:   ScoreHandlerResult{Rows: int64(len(playerScoreRows))},
+		Data:   ScoreHandlerResult{Rows: int64(len(playerScoreMap))},
 	})
 }
 
