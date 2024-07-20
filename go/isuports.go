@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/felixge/fgprof"
+	"golang.org/x/exp/slices"
 	"io"
 	"net/http"
 	"os"
@@ -1394,12 +1395,14 @@ func competitionRankingHandler(c echo.Context) error {
 		for i, ps := range pss {
 			playerIDs[i] = ps.PlayerID
 		}
+		slices.Sort(playerIDs)
+		uniquePlayerIDs := slices.Compact(playerIDs)
 
 		// 参加者を取得する
-		players := make([]PlayerRow, len(playerIDs))
+		players := make([]PlayerRow, len(uniquePlayerIDs))
 		query, args, err := sqlx.In(
 			"SELECT * FROM player WHERE id IN (?)",
-			playerIDs,
+			uniquePlayerIDs,
 		)
 		if err != nil {
 			_ = tx.Rollback()
