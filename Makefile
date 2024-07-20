@@ -1,31 +1,33 @@
 .PHONY: *
 
-gogo: stop-services sync-app build truncate-logs start-services
+gogo: stop-services build sync-app truncate-logs start-services
 
 stop-services:
 	sudo systemctl stop nginx
 	sudo systemctl stop isuports.service
-	ssh isucon-s2 sudo systemctl stop isuports.service
+	ssh isucon-s2 "sudo systemctl stop isuports.service"
+	ssh isucon-s3 "sudo systemctl stop isuports.service"
 	ssh isucon-s3 "sudo systemctl stop mysql"
 
 sync-app:
-	scp -r go isucon-s2:~/webapp/go
+	scp -r go isucon-s2:~/webapp/
+	scp -r go isucon-s3:~/webapp/
 
 build:
 	cd go && make
-	ssh isucon-s2 "cd webapp/go && make"
 
 truncate-logs:
 	sudo journalctl --vacuum-size=1K
 	sudo truncate --size 0 /var/log/nginx/access.log
 	sudo truncate --size 0 /var/log/nginx/error.log
-	sudo truncate --size 0 /var/log/mysql/mysql-slow.log && sudo chmod 666 /var/log/mysql/mysql-slow.log
-	sudo truncate --size 0 /var/log/mysql/error.log
+	ssh isucon-s3 "sudo truncate --size 0 /var/log/mysql/mysql-slow.log && sudo chmod 666 /var/log/mysql/mysql-slow.log"
+	ssh isucon-s3 "sudo truncate --size 0 /var/log/mysql/error.log"
 
 start-services:
 	ssh isucon-s3 "sudo systemctl start mysql"
 	sudo systemctl start isuports.service
 	ssh isucon-s2 sudo systemctl start isuports.service
+	ssh isucon-s3 sudo systemctl start isuports.service
 	sudo systemctl start nginx
 
 kataribe: timestamp=$(shell TZ=Asia/Tokyo date "+%Y%m%d-%H%M%S")

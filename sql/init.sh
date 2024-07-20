@@ -21,3 +21,5 @@ rm -f ../tenant_db/*.db
 cp -r ../../initial_data/*.db ../tenant_db/
 ssh isucon-s2 "cd webapp && rm -f tenant_db/*.db"
 ssh isucon-s2 "cd webapp && cp -r ../initial_data/*.db tenant_db/"
+ssh isucon-s3 "cd webapp && rm -f tenant_db/*.db"
+ssh isucon-s3 "cd webapp && cp -r ../initial_data/*.db tenant_db/"

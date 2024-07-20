@@ -19,6 +19,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-sql-driver/mysql"
@@ -129,6 +130,7 @@ func SetCacheControlPrivate(next echo.HandlerFunc) echo.HandlerFunc {
 
 var (
 	snowflakeNode *snowflake.Node
+	tenantMap     = sync.Map{}
 )
 
 // Run は cmd/isuports/main.go から呼ばれるエントリーポイントです
@@ -343,6 +345,10 @@ func retrieveTenantRowFromHeader(c echo.Context) (*TenantRow, error) {
 	}
 
 	// テナントの存在確認
+	if tenant, exist := tenantMap.Load(tenantName); exist {
+		return tenant.(*TenantRow), nil
+	}
+
 	var tenant TenantRow
 	if err := adminDB.GetContext(
 		context.Background(),
@@ -352,6 +358,8 @@ func retrieveTenantRowFromHeader(c echo.Context) (*TenantRow, error) {
 	); err != nil {
 		return nil, fmt.Errorf("failed to Select tenant: name=%s, %w", tenantName, err)
 	}
+	tenantMap.Store(tenantName, &tenant)
+
 	return &tenant, nil
 }
 
@@ -542,7 +550,7 @@ func billingReportByCompetition(ctx context.Context, tenantDB dbOrTx, tenantID i
 	if err := adminDB.SelectContext(
 		ctx,
 		&vhs,
-		"SELECT player_id, MIN(created_at) AS min_created_at FROM visit_history WHERE tenant_id = ? AND competition_id = ? GROUP BY player_id",
+		"SELECT player_id, created_at AS min_created_at FROM visit_history WHERE tenant_id = ? AND competition_id = ?",
 		tenantID,
 		comp.ID,
 	); err != nil && err != sql.ErrNoRows {
@@ -1358,7 +1366,7 @@ func competitionRankingHandler(c echo.Context) error {
 
 	if _, err := adminDB.ExecContext(
 		ctx,
-		"INSERT INTO visit_history (player_id, tenant_id, competition_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+		"INSERT IGNORE INTO visit_history (player_id, tenant_id, competition_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
 		v.playerID, tenant.ID, competitionID, now, now,
 	); err != nil {
 		return fmt.Errorf(
