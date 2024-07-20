@@ -6,6 +6,8 @@ import (
 	"encoding/csv"
 	"errors"
 	"fmt"
+	"github.com/felixge/fgprof"
+	"golang.org/x/exp/slices"
 	"io"
 	"net/http"
 	"os"
@@ -19,7 +21,6 @@ import (
 	"time"
 
 	"github.com/go-sql-driver/mysql"
-	"github.com/gofrs/flock"
 	"github.com/jmoiron/sqlx"
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
@@ -85,6 +86,10 @@ func tenantDBPath(id int64) string {
 
 // テナントDBに接続する
 func connectToTenantDB(id int64) (*sqlx.DB, error) {
+	err := createTenantDB(id)
+	if err != nil {
+		return nil, fmt.Errorf("error createTenantDB: %w", err)
+	}
 	p := tenantDBPath(id)
 	db, err := sqlx.Open(sqliteDriverName, fmt.Sprintf("file:%s?mode=rw", p))
 	if err != nil {
@@ -97,10 +102,19 @@ func connectToTenantDB(id int64) (*sqlx.DB, error) {
 func createTenantDB(id int64) error {
 	p := tenantDBPath(id)
 
+	// ファイルが存在するか確認
+	if _, err := os.Stat(p); err == nil {
+		fmt.Println("Database already exists")
+		return nil
+	}
+
+	// ファイルが存在しない場合、新規作成
 	cmd := exec.Command("sh", "-c", fmt.Sprintf("sqlite3 %s < %s", p, tenantDBSchemaFilePath))
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("failed to exec sqlite3 %s < %s, out=%s: %w", p, tenantDBSchemaFilePath, string(out), err)
 	}
+	fmt.Println("Database created successfully")
+
 	return nil
 }
 
@@ -140,6 +154,11 @@ func SetCacheControlPrivate(next echo.HandlerFunc) echo.HandlerFunc {
 
 // Run は cmd/isuports/main.go から呼ばれるエントリーポイントです
 func Run() {
+	http.DefaultServeMux.Handle("/debug/fgprof", fgprof.Handler())
+	go func() {
+		log.Print(http.ListenAndServe(":6060", nil))
+	}()
+
 	e := echo.New()
 	e.Debug = true
 	e.Logger.SetLevel(log.DEBUG)
@@ -433,17 +452,6 @@ func lockFilePath(id int64) string {
 	return filepath.Join(tenantDBDir, fmt.Sprintf("%d.lock", id))
 }
 
-// 排他ロックする
-func flockByTenantID(tenantID int64) (io.Closer, error) {
-	p := lockFilePath(tenantID)
-
-	fl := flock.New(p)
-	if err := fl.Lock(); err != nil {
-		return nil, fmt.Errorf("error flock.Lock: path=%s, %w", p, err)
-	}
-	return fl, nil
-}
-
 type TenantsAddHandlerResult struct {
 	Tenant TenantWithBilling `json:"tenant"`
 }
@@ -494,13 +502,6 @@ func tenantsAddHandler(c echo.Context) error {
 	if err != nil {
 		return fmt.Errorf("error get LastInsertId: %w", err)
 	}
-	// NOTE: 先にadminDBに書き込まれることでこのAPIの処理中に
-	//       /api/admin/tenants/billingにアクセスされるとエラーになりそう
-	//       ロックなどで対処したほうが良さそう
-	if err := createTenantDB(id); err != nil {
-		return fmt.Errorf("error createTenantDB: id=%d name=%s %w", id, name, err)
-	}
-
 	res := TenantsAddHandlerResult{
 		Tenant: TenantWithBilling{
 			ID:          strconv.FormatInt(id, 10),
@@ -569,13 +570,6 @@ func billingReportByCompetition(ctx context.Context, tenantDB dbOrTx, tenantID i
 		}
 		billingMap[vh.PlayerID] = "visitor"
 	}
-
-	// player_scoreを読んでいるときに更新が走ると不整合が起こるのでロックを取得する
-	fl, err := flockByTenantID(tenantID)
-	if err != nil {
-		return nil, fmt.Errorf("error flockByTenantID: %w", err)
-	}
-	defer fl.Close()
 
 	// スコアを登録した参加者のIDを取得する
 	scoredPlayerIDs := []string{}
@@ -672,43 +666,28 @@ func tenantsBillingHandler(c echo.Context) error {
 		if beforeID != 0 && beforeID <= t.ID {
 			continue
 		}
-		err := func(t TenantRow) error {
-			tb := TenantWithBilling{
-				ID:          strconv.FormatInt(t.ID, 10),
-				Name:        t.Name,
-				DisplayName: t.DisplayName,
-			}
-			tenantDB, err := connectToTenantDB(t.ID)
-			if err != nil {
-				return fmt.Errorf("failed to connectToTenantDB: %w", err)
-			}
-			defer tenantDB.Close()
-			cs := []CompetitionRow{}
-			if err := tenantDB.SelectContext(
-				ctx,
-				&cs,
-				"SELECT * FROM competition WHERE tenant_id=?",
-				t.ID,
-			); err != nil {
-				return fmt.Errorf("failed to Select competition: %w", err)
-			}
-			for _, comp := range cs {
-				report, err := billingReportByCompetition(ctx, tenantDB, t.ID, comp.ID)
-				if err != nil {
-					return fmt.Errorf("failed to billingReportByCompetition: %w", err)
-				}
-				tb.BillingYen += report.BillingYen
-			}
-			tenantBillings = append(tenantBillings, tb)
-			return nil
-		}(t)
-		if err != nil {
-			return err
+
+		tb := TenantWithBilling{
+			ID:          strconv.FormatInt(t.ID, 10),
+			Name:        t.Name,
+			DisplayName: t.DisplayName,
 		}
+
+		// レポートデータベースからテナントの請求情報を取得
+		var billingYen int64
+		err := adminDB.GetContext(ctx, &billingYen, "SELECT  COALESCE(SUM(billing_yen), 0) FROM billing_reports WHERE tenant_id = ?", t.ID)
+		if err != nil {
+			billingYen = 0
+		}
+
+		tb.BillingYen = billingYen
+		tenantBillings = append(tenantBillings, tb)
+
 		if len(tenantBillings) >= 10 {
 			break
 		}
 	}
+
 	return c.JSON(http.StatusOK, SuccessResult{
 		Status: true,
 		Data: TenantsBillingHandlerResult{
@@ -984,6 +963,27 @@ func competitionFinishHandler(c echo.Context) error {
 			now, now, id, err,
 		)
 	}
+
+	report, err := billingReportByCompetition(ctx, tenantDB, v.tenantID, id)
+	if err != nil {
+		return fmt.Errorf("error billingReportByCompetition: %w", err)
+	}
+
+	// 非同期で課金レポートを生成し、保存
+	go func() {
+		if _, err := adminDB.ExecContext(ctx, `
+        INSERT INTO billing_reports (
+            tenant_id, competition_id, competition_title, player_count, visitor_count, 
+            billing_player_yen, billing_visitor_yen, billing_yen
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+			v.tenantID, report.CompetitionID, report.CompetitionTitle, report.PlayerCount,
+			report.VisitorCount, report.BillingPlayerYen, report.BillingVisitorYen, report.BillingYen,
+		); err != nil {
+			fmt.Errorf("failed to insert new report: %w", err)
+			return
+		}
+	}()
+
 	return c.JSON(http.StatusOK, SuccessResult{Status: true})
 }
 
@@ -1049,12 +1049,6 @@ func competitionScoreHandler(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusBadRequest, "invalid CSV headers")
 	}
 
-	// / DELETEしたタイミングで参照が来ると空っぽのランキングになるのでロックする
-	fl, err := flockByTenantID(v.tenantID)
-	if err != nil {
-		return fmt.Errorf("error flockByTenantID: %w", err)
-	}
-	defer fl.Close()
 	var rowNum int64
 	playerScoreRows := []PlayerScoreRow{}
 	for {
@@ -1112,18 +1106,17 @@ func competitionScoreHandler(c echo.Context) error {
 	); err != nil {
 		return fmt.Errorf("error Delete player_score: tenantID=%d, competitionID=%s, %w", v.tenantID, competitionID, err)
 	}
+	// バルクインサート用のクエリとパラメータを作成
+	valueStrings := make([]string, 0, len(playerScoreRows))
+	valueArgs := make([]interface{}, 0, len(playerScoreRows)*8)
 	for _, ps := range playerScoreRows {
-		if _, err := tenantDB.NamedExecContext(
-			ctx,
-			"INSERT INTO player_score (id, tenant_id, player_id, competition_id, score, row_num, created_at, updated_at) VALUES (:id, :tenant_id, :player_id, :competition_id, :score, :row_num, :created_at, :updated_at)",
-			ps,
-		); err != nil {
-			return fmt.Errorf(
-				"error Insert player_score: id=%s, tenant_id=%d, playerID=%s, competitionID=%s, score=%d, rowNum=%d, createdAt=%d, updatedAt=%d, %w",
-				ps.ID, ps.TenantID, ps.PlayerID, ps.CompetitionID, ps.Score, ps.RowNum, ps.CreatedAt, ps.UpdatedAt, err,
-			)
+		valueStrings = append(valueStrings, "(?, ?, ?, ?, ?, ?, ?, ?)")
+		valueArgs = append(valueArgs, ps.ID, ps.TenantID, ps.PlayerID, ps.CompetitionID, ps.Score, ps.RowNum, ps.CreatedAt, ps.UpdatedAt)
+	}
+	stmt := fmt.Sprintf("INSERT INTO player_score (id, tenant_id, player_id, competition_id, score, row_num, created_at, updated_at) VALUES %s", strings.Join(valueStrings, ","))
 
-		}
+	if _, err := tenantDB.ExecContext(ctx, stmt, valueArgs...); err != nil {
+		return fmt.Errorf("error Bulk Insert player_score: %w", err)
 	}
 
 	return c.JSON(http.StatusOK, SuccessResult{
@@ -1237,38 +1230,67 @@ func playerHandler(c echo.Context) error {
 		return fmt.Errorf("error Select competition: %w", err)
 	}
 
-	// player_scoreを読んでいるときに更新が走ると不整合が起こるのでロックを取得する
-	fl, err := flockByTenantID(v.tenantID)
-	if err != nil {
-		return fmt.Errorf("error flockByTenantID: %w", err)
+	// 競技IDを収集
+	competitionIDs := make([]string, len(cs))
+	for i, c := range cs {
+		competitionIDs[i] = c.ID
 	}
-	defer fl.Close()
+
+	// player_scoreを一度に取得
+	playerScores := []PlayerScoreRow{}
+	query, args, err := sqlx.In(
+		"SELECT * FROM player_score WHERE tenant_id = ? AND player_id = ? AND competition_id IN (?) ORDER BY competition_id, row_num DESC",
+		v.tenantID, p.ID, competitionIDs)
+	if err != nil {
+		return fmt.Errorf("error building query for player scores: %w", err)
+	}
+	query = tenantDB.Rebind(query)
+	if err := tenantDB.SelectContext(ctx, &playerScores, query, args...); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("error Select player_score: %w", err)
+	}
+
+	// 最新のスコアを取得
+	psMap := make(map[string]PlayerScoreRow)
+	for _, ps := range playerScores {
+		if _, exists := psMap[ps.CompetitionID]; !exists {
+			psMap[ps.CompetitionID] = ps
+		}
+	}
+
+	// 結果のスライスに変換
 	pss := make([]PlayerScoreRow, 0, len(cs))
 	for _, c := range cs {
-		ps := PlayerScoreRow{}
-		if err := tenantDB.GetContext(
-			ctx,
-			&ps,
-			// 最後にCSVに登場したスコアを採用する = row_numが一番大きいもの
-			"SELECT * FROM player_score WHERE tenant_id = ? AND competition_id = ? AND player_id = ? ORDER BY row_num DESC LIMIT 1",
-			v.tenantID,
-			c.ID,
-			p.ID,
-		); err != nil {
-			// 行がない = スコアが記録されてない
-			if errors.Is(err, sql.ErrNoRows) {
-				continue
-			}
-			return fmt.Errorf("error Select player_score: tenantID=%d, competitionID=%s, playerID=%s, %w", v.tenantID, c.ID, p.ID, err)
+		if ps, exists := psMap[c.ID]; exists {
+			pss = append(pss, ps)
 		}
-		pss = append(pss, ps)
 	}
 
 	psds := make([]PlayerScoreDetail, 0, len(pss))
+	// 一度に全ての CompetitionRow を取得
+	comps := []CompetitionRow{}
+	query, args, err = sqlx.In(
+		"SELECT * FROM competition WHERE id IN (?)",
+		competitionIDs,
+	)
+	if err != nil {
+		return fmt.Errorf("error building query for competitions: %w", err)
+	}
+	query = tenantDB.Rebind(query)
+	if err := tenantDB.SelectContext(ctx, &comps, query, args...); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("error Select competitions: %w", err)
+	}
+
+	// CompetitionID をキーにしたマップを作成
+	compMap := make(map[string]CompetitionRow)
+	for _, comp := range comps {
+		compMap[comp.ID] = comp
+	}
+
+	// pss をループして psds を作成
 	for _, ps := range pss {
-		comp, err := retrieveCompetition(ctx, tenantDB, ps.CompetitionID)
-		if err != nil {
-			return fmt.Errorf("error retrieveCompetition: %w", err)
+		comp, exists := compMap[ps.CompetitionID]
+		if !exists {
+			return fmt.Errorf("competition not found: id=%s", ps.CompetitionID)
 		}
 		psds = append(psds, PlayerScoreDetail{
 			CompetitionTitle: comp.Title,
@@ -1365,22 +1387,60 @@ func competitionRankingHandler(c echo.Context) error {
 		}
 	}
 
-	// player_scoreを読んでいるときに更新が走ると不整合が起こるのでロックを取得する
-	fl, err := flockByTenantID(v.tenantID)
+	tx, err := tenantDB.Beginx()
 	if err != nil {
-		return fmt.Errorf("error flockByTenantID: %w", err)
+		return fmt.Errorf("error begin transaction failed: %w", err)
 	}
-	defer fl.Close()
+
 	pss := []PlayerScoreRow{}
-	if err := tenantDB.SelectContext(
+	if err := tx.SelectContext(
 		ctx,
 		&pss,
 		"SELECT * FROM player_score WHERE tenant_id = ? AND competition_id = ? ORDER BY row_num DESC",
 		tenant.ID,
 		competitionID,
 	); err != nil {
+		_ = tx.Rollback()
 		return fmt.Errorf("error Select player_score: tenantID=%d, competitionID=%s, %w", tenant.ID, competitionID, err)
 	}
+
+	// Create a map for quick lookup
+	playerMap := make(map[string]PlayerRow)
+	if len(pss) != 0 {
+		// Collect all PlayerIDs
+		playerIDs := make([]string, len(pss))
+		for i, ps := range pss {
+			playerIDs[i] = ps.PlayerID
+		}
+		slices.Sort(playerIDs)
+		uniquePlayerIDs := slices.Compact(playerIDs)
+
+		// 参加者を取得する
+		players := make([]PlayerRow, len(uniquePlayerIDs))
+		query, args, err := sqlx.In(
+			"SELECT * FROM player WHERE id IN (?)",
+			uniquePlayerIDs,
+		)
+		if err != nil {
+			_ = tx.Rollback()
+			return fmt.Errorf("error building query for players: %w", err)
+		}
+		query = tx.Rebind(query)
+		if err := tx.SelectContext(ctx, &players, query, args...); err != nil && !errors.Is(err, sql.ErrNoRows) {
+			_ = tx.Rollback()
+			return fmt.Errorf("error Select players: %w", err)
+		}
+
+		for _, player := range players {
+			playerMap[player.ID] = player
+		}
+	}
+
+	if err = tx.Commit(); err != nil {
+		_ = tx.Rollback()
+		return fmt.Errorf("error commit transaction failed: %w", err)
+	}
+
 	ranks := make([]CompetitionRank, 0, len(pss))
 	scoredPlayerSet := make(map[string]struct{}, len(pss))
 	for _, ps := range pss {
@@ -1390,9 +1450,9 @@ func competitionRankingHandler(c echo.Context) error {
 			continue
 		}
 		scoredPlayerSet[ps.PlayerID] = struct{}{}
-		p, err := retrievePlayer(ctx, tenantDB, ps.PlayerID)
-		if err != nil {
-			return fmt.Errorf("error retrievePlayer: %w", err)
+		p, ok := playerMap[ps.PlayerID]
+		if !ok {
+			return fmt.Errorf("player not found: id=%s", ps.PlayerID)
 		}
 		ranks = append(ranks, CompetitionRank{
 			Score:             ps.Score,
@@ -1401,12 +1461,14 @@ func competitionRankingHandler(c echo.Context) error {
 			RowNum:            ps.RowNum,
 		})
 	}
+
 	sort.Slice(ranks, func(i, j int) bool {
 		if ranks[i].Score == ranks[j].Score {
 			return ranks[i].RowNum < ranks[j].RowNum
 		}
 		return ranks[i].Score > ranks[j].Score
 	})
+
 	pagedRanks := make([]CompetitionRank, 0, 100)
 	for i, rank := range ranks {
 		if int64(i) < rankAfter {
@@ -1622,5 +1684,49 @@ func initializeHandler(c echo.Context) error {
 	res := InitializeHandlerResult{
 		Lang: "go",
 	}
+
+	ctx := context.Background()
+
+	// adminDB からすべてのテナントを取得
+	ts := []TenantRow{}
+	if err := adminDB.SelectContext(ctx, &ts, "SELECT * FROM tenant"); err != nil {
+		return fmt.Errorf("error Select tenant: %w", err)
+	}
+
+	// 各テナントの終了済み大会について billingReportByCompetition を実行してレポートを生成
+	for _, t := range ts {
+		tenantDB, err := connectToTenantDB(t.ID)
+		if err != nil {
+			return fmt.Errorf("failed to connectToTenantDB: %w", err)
+		}
+		defer tenantDB.Close()
+
+		// 終了済み大会を取得
+		comps := []CompetitionRow{}
+		if err := tenantDB.SelectContext(ctx, &comps, "SELECT * FROM competition WHERE tenant_id = ? AND finished_at IS NOT NULL", t.ID); err != nil {
+			return fmt.Errorf("failed to select finished competitions: %w", err)
+		}
+
+		// 各大会についてレポートを生成し、レポートデータベースに挿入
+		for _, comp := range comps {
+			report, err := billingReportByCompetition(ctx, tenantDB, t.ID, comp.ID)
+			if err != nil {
+				return fmt.Errorf("error billingReportByCompetition: %w", err)
+			}
+
+			// 新しいレポートを挿入
+			if _, err := adminDB.ExecContext(ctx, `
+                INSERT INTO billing_reports (
+                    tenant_id, competition_id, competition_title, player_count, visitor_count, 
+                    billing_player_yen, billing_visitor_yen, billing_yen
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+				t.ID, report.CompetitionID, report.CompetitionTitle, report.PlayerCount,
+				report.VisitorCount, report.BillingPlayerYen, report.BillingVisitorYen, report.BillingYen,
+			); err != nil {
+				return fmt.Errorf("failed to insert new report: %w", err)
+			}
+		}
+	}
+
 	return c.JSON(http.StatusOK, SuccessResult{Status: true, Data: res})
 }

@@ -26,8 +26,8 @@ kataribe: timestamp=$(shell TZ=Asia/Tokyo date "+%Y%m%d-%H%M%S")
 kataribe:
 	mkdir -p ~/kataribe-logs
 	sudo cp /var/log/nginx/access.log /tmp/last-access.log && sudo chmod 666 /tmp/last-access.log
-	cat /tmp/last-access.log | kataribe -conf kataribe.toml > ~/kataribe-logs/$timestamp.log
-	cat ~/kataribe-logs/$timestamp.log | grep --after-context 20 "Top 20 Sort By Total"
+	cat /tmp/last-access.log | kataribe -conf kataribe.toml > ~/kataribe-logs/$$timestamp.log
+	cat ~/kataribe-logs/$$timestamp.log | grep --after-context 20 "Top 20 Sort By Total"
 
 pprof: TIME=60
 pprof: PROF_FILE=~/pprof.samples.$(shell TZ=Asia/Tokyo date +"%H%M").$(shell git rev-parse HEAD | cut -c 1-8).pb.gz
