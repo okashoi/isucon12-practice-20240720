@@ -141,8 +141,8 @@ func Run() {
 	}()
 
 	e := echo.New()
-	e.Debug = false
-	e.Logger.SetLevel(log.ERROR)
+	e.Debug = true
+	e.Logger.SetLevel(log.DEBUG)
 
 	var (
 		sqlLogger io.Closer
@@ -164,7 +164,7 @@ func Run() {
 	}
 	snowflakeNode = n
 
-	//e.Use(middleware.Logger())
+	e.Use(middleware.Logger())
 	e.Use(middleware.Recover())
 	e.Use(SetCacheControlPrivate)
 
