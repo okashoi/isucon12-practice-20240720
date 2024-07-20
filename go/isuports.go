@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"github.com/bwmarrin/snowflake"
 	"github.com/felixge/fgprof"
+	"github.com/lestrrat-go/jwx/v2/jwk"
 	"golang.org/x/exp/slices"
 	"io"
 	"net/http"
@@ -28,7 +29,6 @@ import (
 	"github.com/labstack/echo/v4/middleware"
 	"github.com/labstack/gommon/log"
 	"github.com/lestrrat-go/jwx/v2/jwa"
-	"github.com/lestrrat-go/jwx/v2/jwk"
 	"github.com/lestrrat-go/jwx/v2/jwt"
 )
 
@@ -244,6 +244,26 @@ type Viewer struct {
 	tenantID   int64
 }
 
+var (
+	keyOnce sync.Once
+	key     interface{}
+	keyErr  error
+)
+
+func initKey() {
+	keyFilename := getEnv("ISUCON_JWT_KEY_FILE", "../public.pem")
+	keysrc, err := os.ReadFile(keyFilename)
+	if err != nil {
+		keyErr = fmt.Errorf("error os.ReadFile: keyFilename=%s: %w", keyFilename, err)
+		return
+	}
+	key, _, err = jwk.DecodePEM(keysrc)
+	if err != nil {
+		keyErr = fmt.Errorf("error jwk.DecodePEM: %w", err)
+		return
+	}
+}
+
 // リクエストヘッダをパースしてViewerを返す
 func parseViewer(c echo.Context) (*Viewer, error) {
 	cookie, err := c.Request().Cookie(cookieName)
@@ -255,14 +275,10 @@ func parseViewer(c echo.Context) (*Viewer, error) {
 	}
 	tokenStr := cookie.Value
 
-	keyFilename := getEnv("ISUCON_JWT_KEY_FILE", "../public.pem")
-	keysrc, err := os.ReadFile(keyFilename)
-	if err != nil {
-		return nil, fmt.Errorf("error os.ReadFile: keyFilename=%s: %w", keyFilename, err)
-	}
-	key, _, err := jwk.DecodePEM(keysrc)
-	if err != nil {
-		return nil, fmt.Errorf("error jwk.DecodePEM: %w", err)
+	// 鍵の初期化を一度だけ行う
+	keyOnce.Do(initKey)
+	if keyErr != nil {
+		return nil, keyErr
 	}
 
 	token, err := jwt.Parse(
@@ -771,6 +787,11 @@ func playersAddHandler(c echo.Context) error {
 	displayNames := params["display_name[]"]
 
 	pds := make([]PlayerDetail, 0, len(displayNames))
+	// Collect all data to be inserted
+	var (
+		placeholders []string
+		values       []interface{}
+	)
 	for _, displayName := range displayNames {
 		id, err := dispenseID(ctx)
 		if err != nil {
@@ -778,25 +799,22 @@ func playersAddHandler(c echo.Context) error {
 		}
 
 		now := time.Now().Unix()
-		if _, err := tenantDB.ExecContext(
-			ctx,
-			"INSERT INTO player (id, tenant_id, display_name, is_disqualified, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
-			id, v.tenantID, displayName, false, now, now,
-		); err != nil {
-			return fmt.Errorf(
-				"error Insert player at tenantDB: id=%s, displayName=%s, isDisqualified=%t, createdAt=%d, updatedAt=%d, %w",
-				id, displayName, false, now, now, err,
-			)
-		}
-		p, err := retrievePlayer(ctx, tenantDB, id)
-		if err != nil {
-			return fmt.Errorf("error retrievePlayer: %w", err)
-		}
+		placeholders = append(placeholders, "(?, ?, ?, ?, ?, ?)")
+		values = append(values, id, v.tenantID, displayName, false, now, now)
 		pds = append(pds, PlayerDetail{
-			ID:             p.ID,
-			DisplayName:    p.DisplayName,
-			IsDisqualified: p.IsDisqualified,
+			ID:             id,
+			DisplayName:    displayName,
+			IsDisqualified: false,
 		})
+	}
+
+	// Create the SQL statement for bulk insert
+	query := "INSERT INTO player (id, tenant_id, display_name, is_disqualified, created_at, updated_at) VALUES " +
+		strings.Join(placeholders, ", ")
+
+	// Execute the bulk insert
+	if _, err := tenantDB.ExecContext(ctx, query, values...); err != nil {
+		return fmt.Errorf("error Insert player at tenantDB: %w", err)
 	}
 
 	res := PlayersAddHandlerResult{
