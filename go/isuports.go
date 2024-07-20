@@ -1411,6 +1411,33 @@ func competitionRankingHandler(c echo.Context) error {
 	); err != nil {
 		return fmt.Errorf("error Select player_score: tenantID=%d, competitionID=%s, %w", tenant.ID, competitionID, err)
 	}
+
+	// Collect all PlayerIDs
+	playerIDs := make([]string, len(pss))
+	for i, ps := range pss {
+		playerIDs[i] = ps.PlayerID
+	}
+
+	// 参加者を取得する
+	players := make([]PlayerRow, len(playerIDs))
+	query, args, err := sqlx.In(
+		"SELECT * FROM player WHERE id IN (?)",
+		playerIDs,
+	)
+	if err != nil {
+		return fmt.Errorf("error building query for players: %w", err)
+	}
+	query = tenantDB.Rebind(query)
+	if err := tenantDB.SelectContext(ctx, &players, query, args...); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("error Select players: %w", err)
+	}
+
+	// Create a map for quick lookup
+	playerMap := make(map[string]PlayerRow)
+	for _, player := range players {
+		playerMap[player.ID] = player
+	}
+
 	ranks := make([]CompetitionRank, 0, len(pss))
 	scoredPlayerSet := make(map[string]struct{}, len(pss))
 	for _, ps := range pss {
@@ -1420,9 +1447,9 @@ func competitionRankingHandler(c echo.Context) error {
 			continue
 		}
 		scoredPlayerSet[ps.PlayerID] = struct{}{}
-		p, err := retrievePlayer(ctx, tenantDB, ps.PlayerID)
-		if err != nil {
-			return fmt.Errorf("error retrievePlayer: %w", err)
+		p, ok := playerMap[ps.PlayerID]
+		if !ok {
+			return fmt.Errorf("player not found: id=%s", ps.PlayerID)
 		}
 		ranks = append(ranks, CompetitionRank{
 			Score:             ps.Score,
@@ -1431,12 +1458,14 @@ func competitionRankingHandler(c echo.Context) error {
 			RowNum:            ps.RowNum,
 		})
 	}
+
 	sort.Slice(ranks, func(i, j int) bool {
 		if ranks[i].Score == ranks[j].Score {
 			return ranks[i].RowNum < ranks[j].RowNum
 		}
 		return ranks[i].Score > ranks[j].Score
 	})
+
 	pagedRanks := make([]CompetitionRank, 0, 100)
 	for i, rank := range ranks {
 		if int64(i) < rankAfter {
