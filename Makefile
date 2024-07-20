@@ -9,8 +9,8 @@ stop-services:
 	ssh isucon-s3 "sudo systemctl stop mysql"
 
 sync-app:
-	scp -r go isucon-s2:~/webapp/go
-	scp -r go isucon-s3:~/webapp/go
+	scp -r go isucon-s2:~/webapp/
+	scp -r go isucon-s3:~/webapp/
 
 build:
 	cd go && make
