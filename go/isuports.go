@@ -19,6 +19,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-sql-driver/mysql"
@@ -129,6 +130,7 @@ func SetCacheControlPrivate(next echo.HandlerFunc) echo.HandlerFunc {
 
 var (
 	snowflakeNode *snowflake.Node
+	tenantMap     = sync.Map{}
 )
 
 // Run は cmd/isuports/main.go から呼ばれるエントリーポイントです
@@ -343,6 +345,10 @@ func retrieveTenantRowFromHeader(c echo.Context) (*TenantRow, error) {
 	}
 
 	// テナントの存在確認
+	if tenant, exist := tenantMap.Load(tenantName); exist {
+		return tenant.(*TenantRow), nil
+	}
+
 	var tenant TenantRow
 	if err := adminDB.GetContext(
 		context.Background(),
@@ -352,6 +358,8 @@ func retrieveTenantRowFromHeader(c echo.Context) (*TenantRow, error) {
 	); err != nil {
 		return nil, fmt.Errorf("failed to Select tenant: name=%s, %w", tenantName, err)
 	}
+	tenantMap.Store(tenantName, &tenant)
+
 	return &tenant, nil
 }
 
