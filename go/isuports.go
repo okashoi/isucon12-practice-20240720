@@ -6,6 +6,7 @@ import (
 	"encoding/csv"
 	"errors"
 	"fmt"
+	"github.com/bwmarrin/snowflake"
 	"github.com/felixge/fgprof"
 	"golang.org/x/exp/slices"
 	"io"
@@ -113,28 +114,9 @@ func createTenantDB(id int64) error {
 
 // システム全体で一意なIDを生成する
 func dispenseID(ctx context.Context) (string, error) {
-	var id int64
-	var lastErr error
-	for i := 0; i < 100; i++ {
-		var ret sql.Result
-		ret, err := adminDB.ExecContext(ctx, "REPLACE INTO id_generator (stub) VALUES (?);", "a")
-		if err != nil {
-			if merr, ok := err.(*mysql.MySQLError); ok && merr.Number == 1213 { // deadlock
-				lastErr = fmt.Errorf("error REPLACE INTO id_generator: %w", err)
-				continue
-			}
-			return "", fmt.Errorf("error REPLACE INTO id_generator: %w", err)
-		}
-		id, err = ret.LastInsertId()
-		if err != nil {
-			return "", fmt.Errorf("error ret.LastInsertId: %w", err)
-		}
-		break
-	}
-	if id != 0 {
-		return fmt.Sprintf("%x", id), nil
-	}
-	return "", lastErr
+	id := snowflakeNode.Generate()
+
+	return id.String(), nil
 }
 
 // 全APIにCache-Control: privateを設定する
@@ -144,6 +126,10 @@ func SetCacheControlPrivate(next echo.HandlerFunc) echo.HandlerFunc {
 		return next(c)
 	}
 }
+
+var (
+	snowflakeNode *snowflake.Node
+)
 
 // Run は cmd/isuports/main.go から呼ばれるエントリーポイントです
 func Run() {
@@ -169,6 +155,12 @@ func Run() {
 		e.Logger.Panicf("error initializeSQLLogger: %s", err)
 	}
 	defer sqlLogger.Close()
+
+	n, err := snowflake.NewNode(1)
+	if err != nil {
+		e.Logger.Panicf("failed to create snowflake node: %s", err)
+	}
+	snowflakeNode = n
 
 	e.Use(middleware.Logger())
 	e.Use(middleware.Recover())
