@@ -668,7 +668,7 @@ func tenantsBillingHandler(c echo.Context) error {
 
 		// レポートデータベースからテナントの請求情報を取得
 		var billingYen int64
-		err := adminDB.GetContext(ctx, &billingYen, "SELECT SUM(billing_yen) FROM billing_reports WHERE tenant_id = ?", t.ID)
+		err := adminDB.GetContext(ctx, &billingYen, "SELECT  COALESCE(SUM(billing_yen), 0) FROM billing_reports WHERE tenant_id = ?", t.ID)
 		if err != nil {
 			billingYen = 0
 		}
