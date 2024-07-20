@@ -9,7 +9,8 @@ stop-services:
 	sudo systemctl stop mysql
 
 sync-app:
-	ssh isucon-s2 "cd webapp && git pull origin main"
+	scp -r webapp isucon-s2:~/webapp
+	acp -r ../env.sh isucon-s2:~/
 
 build:
 	docker compose -f docker-compose-go.yml build
