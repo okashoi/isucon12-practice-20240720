@@ -99,7 +99,6 @@ func createTenantDB(id int64) error {
 
 	// ファイルが存在するか確認
 	if _, err := os.Stat(p); err == nil {
-		fmt.Println("Database already exists")
 		return nil
 	}
 
@@ -108,7 +107,6 @@ func createTenantDB(id int64) error {
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("failed to exec sqlite3 %s < %s, out=%s: %w", p, tenantDBSchemaFilePath, string(out), err)
 	}
-	fmt.Println("Database created successfully")
 
 	return nil
 }
