@@ -1160,22 +1160,67 @@ func billingHandler(c echo.Context) error {
 	}
 	defer tenantDB.Close()
 
+	// 大会情報を取得
 	cs := []CompetitionRow{}
 	if err := tenantDB.SelectContext(
 		ctx,
 		&cs,
-		"SELECT * FROM competition WHERE tenant_id=? ORDER BY created_at DESC",
+		"SELECT id, title FROM competition WHERE tenant_id=? ORDER BY created_at DESC",
 		v.tenantID,
 	); err != nil {
 		return fmt.Errorf("error Select competition: %w", err)
 	}
+
+	if len(cs) == 0 {
+		return c.JSON(http.StatusOK, SuccessResult{
+			Status: true,
+			Data: BillingHandlerResult{
+				Reports: []BillingReport{},
+			},
+		})
+	}
+
+	// 全てのcompetition_idを取得し、WHERE IN句を作成
+	competitionIDs := make([]interface{}, len(cs))
+	for i, comp := range cs {
+		competitionIDs[i] = comp.ID
+	}
+
+	// 課金レポートを一度のクエリで取得
+	query, args, err := sqlx.In("SELECT * FROM billing_reports WHERE tenant_id = ? AND competition_id IN (?)", v.tenantID, competitionIDs)
+	if err != nil {
+		return fmt.Errorf("error creating SQL query: %w", err)
+	}
+	query = adminDB.Rebind(query)
+
+	reports := []BillingReport{}
+	if err := adminDB.SelectContext(ctx, &reports, query, args...); err != nil {
+		return fmt.Errorf("error Select billing_reports: %w", err)
+	}
+
+	// competition_idをキーとしたマップを作成してレポートを格納
+	reportMap := make(map[string]BillingReport)
+	for _, report := range reports {
+		reportMap[report.CompetitionID] = report
+	}
+
+	// 大会情報に対応する課金レポートを作成
 	tbrs := make([]BillingReport, 0, len(cs))
 	for _, comp := range cs {
-		report, err := billingReportByCompetition(ctx, tenantDB, v.tenantID, comp.ID)
-		if err != nil {
-			return fmt.Errorf("error billingReportByCompetition: %w", err)
+		report, exists := reportMap[comp.ID]
+		if !exists {
+			// レポートがない場合は初期化
+			report = BillingReport{
+				CompetitionID:     comp.ID,
+				CompetitionTitle:  comp.Title,
+				PlayerCount:       0,
+				VisitorCount:      0,
+				BillingPlayerYen:  0,
+				BillingVisitorYen: 0,
+				BillingYen:        0,
+			}
 		}
-		tbrs = append(tbrs, *report)
+		tbrs = append(tbrs, report)
 	}
 
 	res := SuccessResult{
