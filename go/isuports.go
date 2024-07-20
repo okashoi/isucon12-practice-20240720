@@ -1418,30 +1418,32 @@ func competitionRankingHandler(c echo.Context) error {
 		return fmt.Errorf("error Select player_score: tenantID=%d, competitionID=%s, %w", tenant.ID, competitionID, err)
 	}
 
-	// Collect all PlayerIDs
-	playerIDs := make([]string, len(pss))
-	for i, ps := range pss {
-		playerIDs[i] = ps.PlayerID
-	}
-
-	// 参加者を取得する
-	players := make([]PlayerRow, len(playerIDs))
-	query, args, err := sqlx.In(
-		"SELECT * FROM player WHERE id IN (?)",
-		playerIDs,
-	)
-	if err != nil {
-		return fmt.Errorf("error building query for players: %w", err)
-	}
-	query = tenantDB.Rebind(query)
-	if err := tenantDB.SelectContext(ctx, &players, query, args...); err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return fmt.Errorf("error Select players: %w", err)
-	}
-
 	// Create a map for quick lookup
 	playerMap := make(map[string]PlayerRow)
-	for _, player := range players {
-		playerMap[player.ID] = player
+	if len(pss) != 0 {
+		// Collect all PlayerIDs
+		playerIDs := make([]string, len(pss))
+		for i, ps := range pss {
+			playerIDs[i] = ps.PlayerID
+		}
+
+		// 参加者を取得する
+		players := make([]PlayerRow, len(playerIDs))
+		query, args, err := sqlx.In(
+			"SELECT * FROM player WHERE id IN (?)",
+			playerIDs,
+		)
+		if err != nil {
+			return fmt.Errorf("error building query for players: %w", err)
+		}
+		query = tenantDB.Rebind(query)
+		if err := tenantDB.SelectContext(ctx, &players, query, args...); err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("error Select players: %w", err)
+		}
+
+		for _, player := range players {
+			playerMap[player.ID] = player
+		}
 	}
 
 	ranks := make([]CompetitionRank, 0, len(pss))
