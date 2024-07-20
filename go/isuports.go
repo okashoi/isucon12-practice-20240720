@@ -67,7 +67,14 @@ func connectAdminDB() (*sqlx.DB, error) {
 	config.DBName = getEnv("ISUCON_DB_NAME", "isuports")
 	config.ParseTime = true
 	dsn := config.FormatDSN()
-	return sqlx.Open("mysql", dsn)
+
+	db, err := sqlx.Open("mysql", dsn)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open db: %w", err)
+	}
+	db.SetMaxOpenConns(100)
+	db.SetMaxIdleConns(100)
+	return db, nil
 }
 
 // テナントDBのパスを返す
