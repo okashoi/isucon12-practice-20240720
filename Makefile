@@ -6,6 +6,7 @@ stop-services:
 	sudo systemctl stop nginx
 	sudo systemctl stop isuports.service
 	ssh isucon-s2 "sudo systemctl stop isuports.service"
+	ssh isucon-s3 "sudo systemctl stop isuports.service"
 	ssh isucon-s3 "sudo systemctl stop mysql"
 
 sync-app:
